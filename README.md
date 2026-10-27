@@ -1,22 +1,39 @@
 # Agenda Estética · Espaço MeiLing
 
-Sistema de agendamento, cadastro de clientes e prontuário para clínica de estética.
-Node.js + SQLite (embutido no Node 22+) — sem banco externo para instalar.
+Agendamento, cadastro de clientes e prontuário para clínica de estética.
+**TypeScript** (servidor Express + front-end empacotado com esbuild) · **Postgres** (Neon, via Vercel).
 
-## Como rodar
+## Estrutura
+```
+api/index.ts          entrada serverless da Vercel (reexporta o app Express)
+src/server/app.ts     API (rotas, regras de negócio, permissões)
+src/server/db.ts      conexão (pg → Neon / PGlite local), schema e seed
+src/server/dev.ts     servidor local (API + public/)
+src/client/*.ts       front-end (compilado para public/app.js)
+public/               index.html, style.css, logo.svg (+ app.js gerado no build)
+test/api.test.ts      teste de integração da API
+scripts/              build do front-end e dados de demonstração
+```
+
+## Deploy na Vercel (Neon)
+1. **Banco:** no projeto da Vercel → *Storage* → conecte o Neon `estetica-meiling`. A integração cria a variável `DATABASE_URL` (também `POSTGRES_URL`) — o sistema usa qualquer uma. As tabelas são criadas sozinhas no primeiro acesso.
+2. **Variáveis de ambiente** (Settings → Environment Variables, ambiente *Production*):
+   - `ADMIN_EMAIL` e `ADMIN_PASSWORD` — criam o administrador inicial **na primeira execução com o banco vazio**. Em produção não existe senha padrão: sem essas variáveis, nenhum admin é criado.
+   - `CLINIC_TZ` (opcional) — fuso da clínica; padrão `America/Campo_Grande`.
+3. Faça `git push`; a Vercel roda `npm run build` (checa os tipos e gera `public/app.js`) e publica.
+4. Após o primeiro login, troque a senha no botão "Senha" (e pode remover `ADMIN_PASSWORD` das variáveis).
+
+## Rodar localmente
 ```
 npm install
-npm start          # ou dê duplo clique em iniciar.bat
+npm run dev        # http://localhost:3000
 ```
-Acesse http://localhost:3000
-
-**Primeiro acesso (administrador):** `admin@espacomeiling.com` / `admin123` — **troque a senha** (botão "Senha" no topo).
-Para definir outro e-mail/senha inicial: `ADMIN_EMAIL` e `ADMIN_PASSWORD` antes da primeira execução.
-
-Dados de demonstração (opcional, só em banco novo): `npm run demo`
-→ funcionária `gabriela@demo.com` / cliente `fernanda@demo.com`, senha `demo123`.
-
-`npm test` roda o teste de integração da API (usa banco temporário).
+- Sem `DATABASE_URL`, usa um Postgres embutido (PGlite) salvo em `data/pgdata` — não precisa instalar nada.
+- Para usar o Neon localmente: `vercel env pull .env` (o `.env` é lido automaticamente e está no `.gitignore`).
+- Login padrão **só em desenvolvimento**: `admin@espacomeiling.com` / `admin123`.
+- `npm run demo` — cria funcionárias/clientes fictícios (`gabriela@demo.com` e `fernanda@demo.com`, senha `demo123`). Se `DATABASE_URL` estiver definido, recusa rodar (para não poluir o banco real) a não ser com `-- --force`.
+- `npm test` — teste de integração (sempre em memória, ignora `DATABASE_URL`).
+- `npm run typecheck` — checa os tipos do servidor (estrito) e do front-end.
 
 ## Perfis
 | Perfil | O que faz |
@@ -25,13 +42,15 @@ Dados de demonstração (opcional, só em banco novo): `npm run demo`
 | **Funcionário** | Agenda, clientes da sua carteira, **anamnese**, **prontuário de atendimentos**, **fotos antes/depois** |
 | **Cliente** | Cria conta, agenda/cancela horários, vê seu histórico e as fotos que a profissional liberar |
 
-Regras: funcionários só veem clientes que atendem/cadastraram (o admin pode marcar "vê todas as clientes" para recepção).
-Clientes nunca veem anotações clínicas nem anamnese. Fotos só ficam visíveis à cliente se marcadas como tal.
-Conflitos de horário são bloqueados no servidor. Cancelamento pela cliente exige antecedência configurável (padrão 24h).
+Funcionários só veem clientes que atendem/cadastraram (o admin pode marcar "vê todas as clientes", útil para recepção). Clientes nunca veem anamnese nem anotações clínicas. Conflitos de horário são bloqueados no servidor (com trava por profissional). Cancelamento pela cliente exige antecedência configurável (padrão 24h).
 
-## Onde ficam os dados
-`data/clinica.db` (SQLite) e `data/uploads/` (fotos). **Faça backup dessa pasta.**
-Variáveis: `PORT`, `DATA_DIR`.
+## Fotos
+A Vercel não tem disco persistente e limita o corpo da requisição a 4,5 MB, então:
+- as fotos ficam **no próprio Postgres** (coluna `bytea`);
+- o navegador **reduz cada imagem** (lado maior 1800 px, JPEG 85%) antes de enviar, uma por requisição. Um PNG de 10 MB vira algumas centenas de KB;
+- o servidor aceita no máximo 4 MB por imagem.
 
-## Uso na internet
-Dados de saúde são sensíveis (LGPD). Publique atrás de HTTPS (proxy reverso) e mantenha backups.
+O plano gratuito do Neon tem 0,5 GB; com fotos reduzidas isso comporta milhares de imagens.
+
+## LGPD
+Dados de saúde são sensíveis: mantenha acesso restrito, use senhas fortes para a equipe e ative backups do Neon.
