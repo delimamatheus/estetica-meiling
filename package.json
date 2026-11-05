@@ -11,6 +11,7 @@
     "start": "npm run dev",
     "test": "tsx test/api.test.ts",
     "demo": "tsx scripts/demo.ts",
+    "purge-clients": "node --env-file-if-exists=.env --import tsx scripts/purge-clients.ts",
     "admin": "node --env-file-if-exists=.env --import tsx scripts/set-admin.ts"
   },
   "author": "",

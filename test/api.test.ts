@@ -135,6 +135,11 @@ const nextWeekday = (dow: number) => { // próxima data futura com dia da semana
   ok(await cli.req('POST', '/api/auth/logout'));
   ok(await cli.req('GET', '/api/my/history'), 401);
 
+  // exclusão de cliente: só admin; apaga dados e a conta do portal
+  ok(await s1.req('DELETE', `/api/clients/${c}`), 403);
+  ok(await admin.req('DELETE', `/api/clients/${c}`));
+  ok(await admin.req('GET', `/api/clients/${c}`), 404);
+  ok(await new Sess().req('POST', '/api/auth/login', { email: 'maria@x.com', password: 'maria123' }), 401);
   console.log('Todos os testes passaram ✔');
   server.close();
   process.exit(0);

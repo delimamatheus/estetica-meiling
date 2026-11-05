@@ -463,6 +463,15 @@ app.put('/api/clients/:id', auth, h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+app.delete('/api/clients/:id', roles('admin'), h(async (req, res) => {
+  const c = await staffAccess(req);
+  await (await getDb()).tx(async (q) => {
+    await q('DELETE FROM clients WHERE id=$1', [c.id]); // cascata: agendamentos, anamneses, prontuários e fotos
+    if (c.user_id) await q(`DELETE FROM users WHERE id=$1 AND role='client'`, [c.user_id]);
+  });
+  res.json({ ok: true });
+}));
+
 app.post('/api/clients/:id/portal-access', auth, h(async (req, res) => {
   const c = await staffAccess(req);
   if (c.user_id) throw bad('Este cliente já possui acesso');

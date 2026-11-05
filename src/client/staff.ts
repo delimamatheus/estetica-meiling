@@ -311,7 +311,7 @@ Staff.client = async (id, tab = 'resumo') => {
 export async function tabResumo(c, T, reload) {
   const P = isAdmin() ? await pros() : null;
   T.innerHTML = str(html`<div class="card"><div class="row between"><h2>Dados cadastrais</h2>
-    <div class="row">${!c.has_portal ? html`<button class="btn sm ghost" data-act="portal">Criar acesso ao portal</button>` : ''}<button class="btn sm" data-act="edit">Editar</button></div></div>
+    <div class="row">${!c.has_portal ? html`<button class="btn sm ghost" data-act="portal">Criar acesso ao portal</button>` : ''}<button class="btn sm" data-act="edit">Editar</button>${isAdmin() ? html`<button class="btn sm danger" data-act="delclient">Excluir cliente</button>` : ''}</div></div>
     <dl class="kv">
       <dt>Nascimento</dt><dd>${c.birth_date ? fmtDate(c.birth_date) + ' (' + age(c.birth_date) + ' anos)' : '—'}</dd>
       <dt>Telefone</dt><dd>${c.phone || '—'}</dd><dt>E-mail</dt><dd>${c.email || '—'}</dd>
@@ -324,6 +324,12 @@ export async function tabResumo(c, T, reload) {
     edit: () => {
       const m = openModal('Editar dados', html`<form id="ec">${clientFormFields(c, P)}<div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn" type="submit">Salvar</button></div></form>`);
       onSubmit(m.body, '#ec', async (fd) => { await PUT('/api/clients/' + c.id, formObj(fd)); m.close(); toast('Dados atualizados'); reload(); });
+    },
+    delclient: async () => {
+      if (!confirmBox(`Excluir ${c.name} definitivamente? Isso apaga também agendamentos, anamneses, atendimentos e fotos. Não há como desfazer.`)) return;
+      await DEL('/api/clients/' + c.id);
+      toast('Cliente excluída');
+      location.hash = '#/clientes';
     },
     portal: () => {
       const m = openModal('Acesso ao portal da cliente', html`<form id="pa"><p class="muted">Cria um login para a cliente ver e agendar seus horários. Informe uma senha provisória e repasse a ela.</p>
