@@ -162,8 +162,26 @@ export function getDb(): Promise<Db> {
   return dbPromise;
 }
 
+/** Em produção, garante o admin definido em ADMIN_EMAIL/ADMIN_PASSWORD (a senha só é redefinida com ADMIN_RESET=1). */
+async function ensureEnvAdmin(db: Db): Promise<void> {
+  const email = process.env.ADMIN_EMAIL, pw = process.env.ADMIN_PASSWORD;
+  if (!email || !pw || pw.length < 8) return;
+  const [u] = await db.q<{ id: number }>('SELECT id FROM users WHERE lower(email)=lower($1)', [email]);
+  if (!u) {
+    await db.q(`INSERT INTO users(name,email,password_hash,role) VALUES('Administrador',$1,$2,'admin')`, [email, hashPassword(pw)]);
+    console.warn(`[seed] Administrador criado: ${email}`);
+  } else if (process.env.ADMIN_RESET === '1') {
+    await db.q(`UPDATE users SET password_hash=$1, role='admin', active=1 WHERE id=$2`, [hashPassword(pw), u.id]);
+    await db.q('DELETE FROM sessions WHERE user_id=$1', [u.id]);
+    console.warn(`[seed] Senha do administrador redefinida: ${email}`);
+  }
+}
+
 async function seed(db: Db): Promise<void> {
-  if ((await db.q('SELECT 1 FROM users LIMIT 1')).length) return;
+  if ((await db.q('SELECT 1 FROM users LIMIT 1')).length) {
+    if (process.env.NODE_ENV === 'production') await ensureEnvAdmin(db);
+    return;
+  }
   const prod = process.env.NODE_ENV === 'production';
   const pw = process.env.ADMIN_PASSWORD || (prod ? '' : 'admin123');
   if (!pw) { console.warn('[seed] Defina ADMIN_EMAIL e ADMIN_PASSWORD para criar o administrador inicial.'); return; }

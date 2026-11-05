@@ -10,7 +10,8 @@
     "dev": "npm run build:client && node --env-file-if-exists=.env --import tsx src/server/dev.ts",
     "start": "npm run dev",
     "test": "tsx test/api.test.ts",
-    "demo": "tsx scripts/demo.ts"
+    "demo": "tsx scripts/demo.ts",
+    "admin": "node --env-file-if-exists=.env --import tsx scripts/set-admin.ts"
   },
   "author": "",
   "license": "ISC",
