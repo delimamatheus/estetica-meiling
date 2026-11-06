@@ -297,27 +297,63 @@ app.put('/api/settings', roles('admin'), h(async (req, res) => {
 }));
 
 // ---------- disponibilidade e agendamentos ----------
-async function overlapping(q: Q, staffId: number, date: string, s: number, e: number, excludeId = 0): Promise<boolean> {
-  const rows = await q<{ start: string; end: string }>(
-    `SELECT start,"end" FROM appointments WHERE staff_id=$1 AND date=$2 AND status!='cancelado' AND id!=$3`, [staffId, date, excludeId]);
-  return rows.some((a) => toMin(a.start) < e && toMin(a.end) > s);
+type Busy = { staff_id: number; room_id: number | null; s: number; e: number };
+async function dayAppts(q: Q, date: string, excludeId = 0): Promise<Busy[]> {
+  const rows = await q<{ staff_id: number; room_id: number | null; start: string; end: string }>(
+    `SELECT staff_id,room_id,start,"end" FROM appointments WHERE date=$1 AND status!='cancelado' AND id!=$2`, [date, excludeId]);
+  return rows.map((a) => ({ staff_id: a.staff_id, room_id: a.room_id, s: toMin(a.start), e: toMin(a.end) }));
 }
-async function slotsFor(q: Q, date: string, staffId: number, duration: number): Promise<string[]> {
+const clash = (a: Busy, s: number, e: number) => a.s < e && a.e > s;
+const activeRoomIds = async (q: Q): Promise<number[]> => (await q<{ id: number }>('SELECT id FROM rooms WHERE active=1 ORDER BY name, id')).map((r) => r.id);
+/** Conflito de profissional ou de sala no intervalo [s,e). */
+async function conflict(q: Q, staffId: number, roomId: number | null, date: string, s: number, e: number, excludeId = 0): Promise<string | null> {
+  for (const a of await dayAppts(q, date, excludeId)) {
+    if (!clash(a, s, e)) continue;
+    if (a.staff_id === staffId) return 'Conflito com outro atendimento da profissional';
+    if (roomId && a.room_id === roomId) return 'A sala já está ocupada neste horário';
+  }
+  return null;
+}
+/** Primeira sala livre no intervalo (null se não houver salas cadastradas ou todas estiverem ocupadas). */
+async function freeRoom(q: Q, date: string, s: number, e: number, excludeId = 0): Promise<number | null> {
+  const rooms = await activeRoomIds(q);
+  const busy = await dayAppts(q, date, excludeId);
+  return rooms.find((r) => !busy.some((a) => a.room_id === r && clash(a, s, e))) ?? null;
+}
+async function slotsFor(q: Q, date: string, staffId: number, duration: number, roomId: number | null = null): Promise<string[]> {
   const st = await getSettings(q);
   if (!st.days.split(',').includes(String(dow(date)))) return [];
   const open = toMin(st.open), close = toMin(st.close), step = Number(st.step);
-  const busy = (await q<{ start: string; end: string }>(
-    `SELECT start,"end" FROM appointments WHERE staff_id=$1 AND date=$2 AND status!='cancelado'`, [staffId, date]))
-    .map((a) => [toMin(a.start), toMin(a.end)]);
+  const busy = await dayAppts(q, date);
+  const rooms = await activeRoomIds(q);
   const now = clinicNow();
   const out: string[] = [];
   for (let t = open; t + duration <= close; t += step) {
     if (date < now.date || (date === now.date && t <= now.min)) continue;
-    if (busy.some(([bs, be]) => bs < t + duration && be > t)) continue;
-    out.push(fromMin(t));
+    const e = t + duration;
+    if (busy.some((a) => a.staff_id === staffId && clash(a, t, e))) continue;
+    const roomOk = roomId ? !busy.some((a) => a.room_id === roomId && clash(a, t, e))
+      : !rooms.length || rooms.some((r) => !busy.some((a) => a.room_id === r && clash(a, t, e)));
+    if (roomOk) out.push(fromMin(t));
   }
   return out;
 }
+
+// ---------- salas ----------
+app.get('/api/rooms', auth, h(async (req, res) => {
+  const all = me(req).role === 'admin' && req.query.all === '1';
+  res.json(await req.q(`SELECT id,name,active FROM rooms ${all ? '' : 'WHERE active=1'} ORDER BY active DESC, name, id`));
+}));
+app.post('/api/rooms', roles('admin'), h(async (req, res) => {
+  const [r] = await req.q<{ id: number }>('INSERT INTO rooms(name,active) VALUES($1,$2) RETURNING id', [need(bodyOf(req).name, 'Nome', 60), bodyOf(req).active === false ? 0 : 1]);
+  res.json({ id: r.id });
+}));
+app.put('/api/rooms/:id', roles('admin'), h(async (req, res) => {
+  const b = bodyOf(req);
+  const r = await req.q('UPDATE rooms SET name=$1,active=$2 WHERE id=$3 RETURNING id', [need(b.name, 'Nome', 60), b.active === false ? 0 : 1, Number(req.params.id)]);
+  if (!r.length) throw new HttpError(404, 'Sala não encontrada');
+  res.json({ ok: true });
+}));
 
 app.get('/api/availability', auth, h(async (req, res) => {
   const date = req.query.date;
@@ -326,12 +362,14 @@ app.get('/api/availability', auth, h(async (req, res) => {
   if (!svc) throw bad('Serviço inválido');
   const [staff] = await req.q(`SELECT id FROM users WHERE id=$1 AND role='staff' AND active=1`, [Number(req.query.staff_id)]);
   if (!staff) throw bad('Profissional inválido');
-  res.json(await slotsFor(req.q, date, staff.id, svc.duration_min));
+  const room = Number(req.query.room_id) || null;
+  res.json(await slotsFor(req.q, date, staff.id, svc.duration_min, room));
 }));
 
 const APPT_SELECT = `SELECT a.*, c.name AS client_name, c.phone AS client_phone, s.name AS service_name, s.price AS service_price,
-  u.name AS staff_name FROM appointments a
-  JOIN clients c ON c.id=a.client_id JOIN services s ON s.id=a.service_id JOIN users u ON u.id=a.staff_id`;
+  u.name AS staff_name, rm.name AS room_name FROM appointments a
+  JOIN clients c ON c.id=a.client_id JOIN services s ON s.id=a.service_id JOIN users u ON u.id=a.staff_id
+  LEFT JOIN rooms rm ON rm.id=a.room_id`;
 
 app.get('/api/appointments', auth, h(async (req, res) => {
   const user = me(req);
@@ -366,13 +404,24 @@ app.post('/api/appointments', auth, h(async (req, res) => {
   const client = user.role === 'client' ? await myClient(req.q, user) : await canAccessClient(req.q, user, Number(b.client_id));
   if (!client) throw bad('Cliente inválido');
   const s = toMin(b.start), e = s + svc.duration_min;
-  const force = isStaffish(user) && b.force === true;
-  if (!force && !(await slotsFor(req.q, b.date, staff.id, svc.duration_min)).includes(b.start)) throw new HttpError(409, 'Horário indisponível');
+  if (e > 1439) throw bad('O atendimento ultrapassa a meia-noite');
+  const staffish = isStaffish(user);
+  // equipe pode digitar qualquer horário; cliente só escolhe entre os horários livres
+  if (!staffish && !(await slotsFor(req.q, b.date, staff.id, svc.duration_min)).includes(b.start)) throw new HttpError(409, 'Horário indisponível');
+  let roomId: number | null = null;
+  if (staffish) {
+    roomId = Number(b.room_id) || null;
+    if (roomId && !(await req.q('SELECT 1 FROM rooms WHERE id=$1 AND active=1', [roomId])).length) throw bad('Sala inválida');
+    if (!roomId && (await activeRoomIds(req.q)).length) throw bad('Escolha a sala');
+  }
   const id = await (await getDb()).tx(async (q) => {
-    await q('SELECT id FROM users WHERE id=$1 FOR UPDATE', [staff.id]); // serializa agendamentos da mesma profissional
-    if (await overlapping(q, staff.id, b.date, s, e)) throw new HttpError(409, 'Horário indisponível: conflito com outro atendimento');
-    const [r] = await q<{ id: number }>(`INSERT INTO appointments(client_id,staff_id,service_id,date,start,"end",status,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-      [client.id, staff.id, svc.id, b.date, b.start, fromMin(e), isStaffish(user) ? 'confirmado' : 'agendado', str(b.notes, 500), user.id]);
+    await q(`SELECT key FROM settings WHERE key='open' FOR UPDATE`); // serializa agendamentos (profissionais e salas)
+    if (!staffish) roomId = await freeRoom(q, b.date, s, e); // cliente: sala escolhida automaticamente
+    if (!staffish && !roomId && (await activeRoomIds(q)).length) throw new HttpError(409, 'Horário indisponível');
+    const c = await conflict(q, staff.id, roomId, b.date, s, e);
+    if (c) throw new HttpError(409, 'Horário indisponível: ' + c.charAt(0).toLowerCase() + c.slice(1));
+    const [r] = await q<{ id: number }>(`INSERT INTO appointments(client_id,staff_id,service_id,room_id,date,start,"end",status,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [client.id, staff.id, svc.id, roomId, b.date, b.start, fromMin(e), staffish ? 'confirmado' : 'agendado', str(b.notes, 500), user.id]);
     return r.id;
   });
   res.json({ id });
@@ -398,19 +447,30 @@ app.put('/api/appointments/:id', auth, h(async (req, res) => {
   if (user.role === 'staff' && !user.see_all_clients && a.staff_id !== user.id) throw new HttpError(403, 'Sem permissão');
   const status = b.status ?? a.status;
   if (!['agendado', 'confirmado', 'realizado', 'cancelado', 'faltou'].includes(status)) throw bad('Status inválido');
-  let { staff_id, date, start, service_id } = a;
+  let { staff_id, date, start, service_id, room_id } = a;
   let end = a.end;
-  if (b.date || b.start || b.staff_id || b.service_id) {
+  if (b.date || b.start || b.staff_id || b.service_id || b.room_id !== undefined) {
     staff_id = Number(b.staff_id ?? a.staff_id); date = b.date ?? a.date; start = b.start ?? a.start; service_id = Number(b.service_id ?? a.service_id);
+    room_id = b.room_id !== undefined ? (Number(b.room_id) || null) : a.room_id;
     if (!isDate(date) || !isTime(start)) throw bad('Data ou horário inválido');
     const [svc] = await req.q('SELECT * FROM services WHERE id=$1', [service_id]);
     if (!svc) throw bad('Serviço inválido');
     if (!(await req.q(`SELECT 1 FROM users WHERE id=$1 AND role='staff' AND active=1`, [staff_id])).length) throw bad('Profissional inválido');
-    end = fromMin(toMin(start) + svc.duration_min);
-    if (status !== 'cancelado' && await overlapping(req.q, staff_id, date, toMin(start), toMin(end), a.id)) throw new HttpError(409, 'Conflito com outro atendimento');
+    if (room_id && room_id !== a.room_id && !(await req.q('SELECT 1 FROM rooms WHERE id=$1 AND active=1', [room_id])).length) throw bad('Sala inválida');
+    if (!room_id && (await activeRoomIds(req.q)).length) throw bad('Escolha a sala');
+    const e = toMin(start) + svc.duration_min;
+    if (e > 1439) throw bad('O atendimento ultrapassa a meia-noite');
+    end = fromMin(e);
+    await (await getDb()).tx(async (q) => {
+      await q(`SELECT key FROM settings WHERE key='open' FOR UPDATE`);
+      const c = status !== 'cancelado' && await conflict(q, staff_id, room_id, date, toMin(start), e, a.id);
+      if (c) throw new HttpError(409, c);
+      await q(`UPDATE appointments SET status=$1,staff_id=$2,service_id=$3,room_id=$4,date=$5,start=$6,"end"=$7,notes=$8 WHERE id=$9`,
+        [status, staff_id, service_id, room_id, date, start, end, b.notes !== undefined ? str(b.notes, 500) : a.notes, a.id]);
+    });
+    return res.json({ ok: true });
   }
-  await req.q(`UPDATE appointments SET status=$1,staff_id=$2,service_id=$3,date=$4,start=$5,"end"=$6,notes=$7 WHERE id=$8`,
-    [status, staff_id, service_id, date, start, end, b.notes !== undefined ? str(b.notes, 500) : a.notes, a.id]);
+  await req.q(`UPDATE appointments SET status=$1,notes=$2 WHERE id=$3`, [status, b.notes !== undefined ? str(b.notes, 500) : a.notes, a.id]);
   res.json({ ok: true });
 }));
 

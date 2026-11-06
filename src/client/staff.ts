@@ -7,37 +7,45 @@ export const isAdmin = () => state.user.role === 'admin';
 /* ---------- seleção de horários (compartilhado com o portal do cliente) ---------- */
 export function wireSlots(scope) {
   const box = scope.querySelector('.slots'), hid = scope.querySelector('[name=start]');
+  const typed = hid.type === 'time'; // equipe: campo de horário digitável; os botões apenas sugerem
   const val = (n) => (scope.querySelector(`[name=${n}]`) || {}).value;
   const refresh = async () => {
-    hid.value = '';
-    const s = val('service_id'), p = val('staff_id'), d = val('date');
-    if (!s || !p || !d) { box.innerHTML = '<span class="muted small">Escolha serviço, profissional e data.</span>'; return; }
+    if (!typed) hid.value = '';
+    const s = val('service_id'), p = val('staff_id'), d = val('date'), r = val('room_id');
+    if (!s || !p || !d) { box.innerHTML = '<span class="muted small">Escolha serviço, profissional e data para ver sugestões.</span>'; return; }
     box.innerHTML = '<span class="muted small">Buscando horários…</span>';
     try {
-      const slots = await GET(`/api/availability?service_id=${s}&staff_id=${p}&date=${d}`);
+      const slots = await GET(`/api/availability?service_id=${s}&staff_id=${p}&date=${d}${r ? '&room_id=' + r : ''}`);
       box.innerHTML = slots.length ? slots.map((t) => `<button type="button" class="slot" data-t="${t}">${t}</button>`).join('')
         : '<span class="muted">Sem horários disponíveis nesta data.</span>';
     } catch (e) { box.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   };
-  scope.addEventListener('change', (e) => { if (['service_id', 'staff_id', 'date'].includes(e.target.name)) refresh(); });
+  scope.addEventListener('change', (e) => { if (['service_id', 'staff_id', 'date', 'room_id'].includes(e.target.name)) refresh(); });
+  const mark = () => box.querySelectorAll('.slot').forEach((x) => x.classList.toggle('on', x.dataset.t === hid.value));
+  if (typed) hid.addEventListener('input', mark);
   box.addEventListener('click', (e) => {
     const b = e.target.closest('.slot'); if (!b) return;
-    box.querySelectorAll('.slot').forEach((x) => x.classList.remove('on'));
-    b.classList.add('on'); hid.value = b.dataset.t;
+    hid.value = b.dataset.t; mark();
   });
   refresh();
 }
-export const slotBlock = () => html`<div class="f"><span style="display:block;font-size:.85rem;font-weight:500;color:var(--em-800);margin-bottom:6px">Horário</span>
-  <div class="slots"></div><input type="hidden" name="start"></div>`;
+/** typed=true (equipe): campo de horário digitável + sugestões; false (cliente): só os botões de horários livres. */
+export const slotBlock = (typed = false) => html`<div class="f"><span style="display:block;font-size:.85rem;font-weight:500;color:var(--em-800);margin-bottom:6px">Horário${typed ? ' (digite ou escolha uma sugestão)' : ''}</span>
+  ${typed ? html`<input type="time" name="start" required style="max-width:160px;margin-bottom:8px">` : html`<input type="hidden" name="start">`}
+  <div class="slots"></div></div>`;
 
 let PROS: any[] | null = null, SERVICES: any[] | null = null;
-export const resetCaches = () => { PROS = null; SERVICES = null; };
+export const resetCaches = () => { PROS = null; SERVICES = null; ROOMS = null; };
 export const pros = async () => PROS || (PROS = await GET('/api/professionals'));
 export const services = async () => SERVICES || (SERVICES = await GET('/api/services'));
+let ROOMS: any[] | null = null;
+export const rooms = async () => ROOMS || (ROOMS = await GET('/api/rooms'));
+const roomSelect = (R: any[], sel: any = '') => R.length
+  ? html`<label class="f"><span>Sala *</span><select name="room_id" required><option value="">Selecione…</option>${opts(R, sel)}</select></label>` : '';
 
 /* ---------- novo agendamento / remarcação ---------- */
 export async function bookingModal({ clientId, date, onDone }: { clientId?: any; date?: any; onDone?: any }) {
-  const [P, S] = await Promise.all([pros(), services()]);
+  const [P, S, R] = await Promise.all([pros(), services(), rooms()]);
   if (!P.length) return toast('Cadastre ao menos um profissional (Equipe) antes de agendar.', true);
   const defStaff = state.user.role === 'staff' ? state.user.id : P[0].id;
   let isNew = false, createdId = 0; // createdId evita duplicar a cliente se o horário falhar
@@ -58,8 +66,9 @@ export async function bookingModal({ clientId, date, onDone }: { clientId?: any;
       <label class="f"><span>Serviço</span><select name="service_id" required><option value="">Selecione…</option>${S.map((s) => html`<option value="${s.id}">${s.name} (${s.duration_min} min)</option>`)}</select></label>
       <label class="f"><span>Profissional</span><select name="staff_id" required>${opts(P, defStaff)}</select></label>
       <label class="f"><span>Data</span><input type="date" name="date" value="${date || today()}" required></label>
+      ${roomSelect(R)}
     </div>
-    ${slotBlock()}
+    ${slotBlock(true)}
     <label class="f"><span>Observações</span><input type="text" name="notes" maxlength="500"></label>
     <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn" type="submit">Agendar</button></div></form>`);
   wireSlots(m.body);
@@ -87,7 +96,7 @@ export async function bookingModal({ clientId, date, onDone }: { clientId?: any;
   }
   onSubmit(m.body, '#bk', async (fd) => {
     const o = formObj(fd);
-    if (!o.start) throw new Error('Escolha um horário');
+    if (!o.start) throw new Error('Informe o horário');
     let cid = Number(o.client_id);
     if (isNew) {
       if (!o.new_name?.trim()) throw new Error('Informe o nome da cliente');
@@ -100,18 +109,20 @@ export async function bookingModal({ clientId, date, onDone }: { clientId?: any;
 }
 
 export async function rescheduleModal(a, onDone) {
-  const P = await pros();
+  const [P, R] = await Promise.all([pros(), rooms()]);
   const m = openModal('Remarcar atendimento', html`<form id="rs">
     <p class="muted">${a.client_name} · ${a.service_name}</p>
     <input type="hidden" name="service_id" value="${a.service_id}">
     <div class="fgrid"><label class="f"><span>Profissional</span><select name="staff_id">${opts(P, a.staff_id)}</select></label>
-    <label class="f"><span>Data</span><input type="date" name="date" value="${a.date}" required></label></div>
-    ${slotBlock()}
+    <label class="f"><span>Data</span><input type="date" name="date" value="${a.date}" required></label>
+    ${roomSelect(R, a.room_id)}</div>
+    ${slotBlock(true)}
     <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn" type="submit">Remarcar</button></div></form>`);
+  (m.body.querySelector('[name=start]') as HTMLInputElement).value = a.start;
   wireSlots(m.body);
   onSubmit(m.body, '#rs', async (fd) => {
-    if (!fd.get('start')) throw new Error('Escolha um horário');
-    await PUT('/api/appointments/' + a.id, { staff_id: Number(fd.get('staff_id')), date: fd.get('date'), start: fd.get('start') });
+    if (!fd.get('start')) throw new Error('Informe o horário');
+    await PUT('/api/appointments/' + a.id, { staff_id: Number(fd.get('staff_id')), date: fd.get('date'), start: fd.get('start'), room_id: fd.get('room_id') || null });
     m.close(); toast('Atendimento remarcado'); onDone && onDone();
   });
 }
@@ -148,6 +159,7 @@ export function apptModal(a, onDone) {
       <dt>Serviço</dt><dd>${a.service_name} · ${fmtMoney(a.service_price)}</dd>
       <dt>Quando</dt><dd>${fmtDateLong(a.date)} · ${a.start}–${a.end}</dd>
       <dt>Profissional</dt><dd>${a.staff_name}</dd>
+      ${a.room_name ? html`<dt>Sala</dt><dd>${a.room_name}</dd>` : ''}
       <dt>Status</dt><dd>${badge(a.status)}</dd>
       ${a.notes ? html`<dt>Observações</dt><dd>${a.notes}</dd>` : ''}
     </dl>
@@ -229,7 +241,7 @@ Staff.agenda = async () => {
       return html`<div class="day ${d === today() ? 'today' : ''} ${off ? 'off' : ''}">
         <div class="day-h"><span>${WEEKDAYS[parseYmd(d).getDay()].slice(0, 3)} <b>${d.slice(8)}</b></span>
           <button class="btn sm ghost" style="padding:0 8px" title="Agendar neste dia" data-act="new" data-d="${d}">+</button></div>
-        ${items.map((a) => html`<button class="appt ${a.status}" data-act="appt" data-id="${a.id}"><b>${a.start} · ${a.client_name}</b>${a.service_name}${canFilter && !agenda.staff ? ' · ' + a.staff_name.split(' ')[0] : ''}</button>`)}
+        ${items.map((a) => html`<button class="appt ${a.status}" data-act="appt" data-id="${a.id}"><b>${a.start} · ${a.client_name}</b>${a.service_name}${canFilter && !agenda.staff ? ' · ' + a.staff_name.split(' ')[0] : ''}${a.room_name ? ' · ' + a.room_name : ''}</button>`)}
         ${!items.length ? html`<div class="muted small" style="padding:8px 10px">${off ? 'Fechado' : '—'}</div>` : ''}
       </div>`;
     })}</div>`);
@@ -489,6 +501,27 @@ Staff.services = async () => {
     });
   };
   on(view(), { new: () => form(), edit: (el) => form(list.find((s) => s.id === Number(el.dataset.id))) });
+};
+
+Staff.rooms = async () => {
+  const list = await GET('/api/rooms?all=1');
+  setView(html`<div class="page-head"><h1>Salas</h1><button class="btn gold" data-act="new">+ Nova sala</button></div>
+    <div class="card tablewrap">${list.length ? html`<table><thead><tr><th>Sala</th><th>Status</th></tr></thead><tbody>
+    ${list.map((r) => html`<tr class="click" data-act="edit" data-id="${r.id}"><td><b>${r.name}</b></td><td>${r.active ? html`<span class="badge">ativa</span>` : html`<span class="badge cancelado">inativa</span>`}</td></tr>`)}</tbody></table>`
+      : html`<div class="empty">Nenhuma sala cadastrada. Cadastre as salas (ex.: Sala 1, Sala 2) para escolhê-las nos agendamentos.</div>`}</div>
+    <p class="muted small mt">Com salas cadastradas, todo agendamento da equipe exige uma sala, e uma sala não pode ter dois atendimentos ao mesmo tempo. Agendamentos feitos pelas clientes recebem automaticamente uma sala livre.</p>`);
+  const form = (r: any = {}) => {
+    const m = openModal(r.id ? 'Editar sala' : 'Nova sala', html`<form id="rf">
+      <label class="f"><span>Nome *</span><input type="text" name="name" value="${r.name || ''}" required maxlength="60" placeholder="Sala 1"></label>
+      <div class="checks mb"><label><input type="checkbox" name="active" ${r.active !== 0 ? raw('checked') : ''}> Ativa (aparece para agendamento)</label></div>
+      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn" type="submit">Salvar</button></div></form>`);
+    onSubmit(m.body, '#rf', async (fd) => {
+      const o = { name: fd.get('name'), active: !!fd.get('active') };
+      await (r.id ? PUT('/api/rooms/' + r.id, o) : POST('/api/rooms', o));
+      ROOMS = null; m.close(); toast('Sala salva'); Staff.rooms();
+    });
+  };
+  on(view(), { new: () => form(), edit: (el) => form(list.find((r) => r.id === Number(el.dataset.id))) });
 };
 
 Staff.team = async () => {

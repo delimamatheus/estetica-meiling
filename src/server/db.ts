@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS services (
   price DOUBLE PRECISION NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS rooms (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS appointments (
   id SERIAL PRIMARY KEY,
   client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -99,6 +104,7 @@ CREATE TABLE IF NOT EXISTS appointments (
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'America/Campo_Grande','YYYY-MM-DD HH24:MI:SS')
 );
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS room_id INTEGER REFERENCES rooms(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_appt_date ON appointments(date, staff_id);
 CREATE INDEX IF NOT EXISTS idx_appt_client ON appointments(client_id);
 CREATE TABLE IF NOT EXISTS anamneses (

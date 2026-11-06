@@ -4,7 +4,7 @@ import { renderShellUser, passwordModal } from './shell';
 import { Staff, resetCaches } from './staff';
 import { Portal } from './client';
 export const NAV = {
-  admin: [['painel', 'Painel'], ['agenda', 'Agenda'], ['clientes', 'Clientes'], ['servicos', 'Serviços'], ['equipe', 'Equipe'], ['config', 'Configurações']],
+  admin: [['painel', 'Painel'], ['agenda', 'Agenda'], ['clientes', 'Clientes'], ['servicos', 'Serviços'], ['salas', 'Salas'], ['equipe', 'Equipe'], ['config', 'Configurações']],
   staff: [['painel', 'Painel'], ['agenda', 'Agenda'], ['clientes', 'Clientes']],
   client: [['inicio', 'Meus horários'], ['agendar', 'Agendar'], ['historico', 'Meu histórico'], ['dados', 'Meus dados']],
 };
@@ -59,10 +59,10 @@ window.renderApp = renderApp;
 
 export const ROUTES = {
   painel: () => Staff.dashboard(), agenda: () => Staff.agenda(), clientes: () => Staff.clients(),
-  servicos: () => Staff.services(), equipe: () => Staff.team(), config: () => Staff.settings(),
+  servicos: () => Staff.services(), salas: () => Staff.rooms(), equipe: () => Staff.team(), config: () => Staff.settings(),
   inicio: () => Portal.home(), agendar: () => Portal.book(), historico: () => Portal.history(), dados: () => Portal.profile(),
 };
-export const ADMIN_ONLY = ['servicos', 'equipe', 'config'];
+export const ADMIN_ONLY = ['servicos', 'salas', 'equipe', 'config'];
 
 export async function route() {
   closeAllModals();

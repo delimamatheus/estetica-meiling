@@ -69,14 +69,14 @@ const nextWeekday = (dow: number) => { // próxima data futura com dia da semana
   const ap = await s1.req('POST', '/api/appointments', { client_id: c, staff_id: ana, service_id: svc.id, date: mon, start: '09:00' });
   ok(ap);
   ok(await s1.req('POST', '/api/appointments', { client_id: c, staff_id: ana, service_id: svc.id, date: mon, start: '09:30' }), 409);
-  ok(await s1.req('POST', '/api/appointments', { client_id: c, staff_id: ana, service_id: svc.id, date: sun, start: '09:00' }), 409);
+  ok(await s1.req('POST', '/api/appointments', { client_id: c, staff_id: ana, service_id: svc.id, date: sun, start: '09:07' })); // equipe digita qualquer horário
   const after = (await s1.req('GET', `/api/availability?date=${mon}&service_id=${svc.id}&staff_id=${ana}`)).body;
   assert(!after.includes('09:00') && !after.includes('09:30') && after.includes('10:30'));
   ok(await s1.req('PUT', '/api/appointments/' + ap.body.id, { status: 'confirmado' }));
 
   // atendimento e fotos
   ok(await s1.req('POST', `/api/clients/${c}/records`, { date: mon, procedure: 'Limpeza de pele', notes: 'ok', appointment_id: ap.body.id }));
-  assert.strictEqual((await s1.req('GET', `/api/appointments?client_id=${c}`)).body[0].status, 'realizado');
+  assert.strictEqual((await s1.req('GET', `/api/appointments?client_id=${c}`)).body.find((x: any) => x.id === ap.body.id).status, 'realizado');
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
   const mkForm = (mime: string, name: string, vis: string) => {
     const f = new FormData(); f.append('photos', new Blob([new Uint8Array(png)], { type: mime }), name); f.append('kind', 'antes'); f.append('visible_to_client', vis);
@@ -134,6 +134,23 @@ const nextWeekday = (dow: number) => { // próxima data futura com dia da semana
   // logout invalida sessão
   ok(await cli.req('POST', '/api/auth/logout'));
   ok(await cli.req('GET', '/api/my/history'), 401);
+
+  // salas: cadastro só do admin; equipe precisa escolher; sala e profissional não podem ter conflito
+  const bia = pros.find((p: any) => p.name.startsWith('Bia')).id, wed = nextWeekday(3);
+  ok(await s1.req('POST', '/api/rooms', { name: 'Sala X' }), 403);
+  const r1 = (await admin.req('POST', '/api/rooms', { name: 'Sala 1' })).body.id, r2 = (await admin.req('POST', '/api/rooms', { name: 'Sala 2' })).body.id;
+  const bk = (who: Sess, staff: number, start: string, room?: number) => who.req('POST', '/api/appointments', { client_id: c, staff_id: staff, service_id: svc.id, date: wed, start, room_id: room });
+  ok(await bk(s1, ana, '10:07'), 400); // sem sala
+  ok(await bk(s1, ana, '10:07', r1));
+  ok(await bk(admin, bia, '10:30', r1), 409); // sala ocupada
+  ok(await bk(admin, bia, '10:30', r2));
+  ok(await bk(s1, ana, '10:30', r2), 409); // profissional ocupada
+  const av = (await s1.req('GET', `/api/availability?date=${wed}&service_id=${svc.id}&staff_id=${bia}&room_id=${r1}`)).body;
+  assert(!av.includes('10:00') && av.includes('14:00'));
+  ok(await cli.req('POST', '/api/auth/login', { email: 'maria@x.com', password: 'maria123' }));
+  const portal = await cli.req('POST', '/api/appointments', { staff_id: bia, service_id: svc.id, date: wed, start: '15:00' });
+  ok(portal);
+  assert.strictEqual((await admin.req('GET', `/api/appointments?from=${wed}&to=${wed}`)).body.find((a: any) => a.id === portal.body.id).room_name, 'Sala 1'); // cliente recebe sala livre
 
   // exclusão de cliente: só admin; apaga dados e a conta do portal
   ok(await s1.req('DELETE', `/api/clients/${c}`), 403);
